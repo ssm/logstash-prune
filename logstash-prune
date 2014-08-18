@@ -1,0 +1,139 @@
+#!/usr/bin/perl
+
+# Program to purge logstash indices older than N days from
+# Elasticsearch.
+#
+# Stig Sandbeck Mathisen <ssm@fnord.no>
+
+use strict;
+use warnings;
+
+use Mojo::IOLoop::Delay;
+use Mojo::UserAgent;
+use DateTime::Format::Strptime qw();
+use Params::Validate qw(:all);
+use Getopt::Long::Descriptive;
+use Data::Validate::URI qw(is_uri);
+
+my ( $opt, $usage ) = describe_options(
+    'logstash-prune %o',
+    [   'url|u=s',
+        'elasticsearch URL',
+        {   default   => 'http://_localhost:9200',
+            callbacks => {
+                is_valid_uri => sub { is_uri( shift() ) }
+            }
+        }
+    ],
+    [   'days|d=i',
+        'days of indices to keep',
+        {   default   => 30,
+            callbacks => {
+                is_positive => sub { shift() > 0 }
+            }
+        }
+    ],
+    [],
+    [ 'verbose|v', 'be verbose' ],
+    [ 'noop|n', 'do not delete data', { implies => 'verbose' } ],
+    [ 'help|h', 'print usage message and exit' ],
+);
+
+print( $usage->text ), exit if $opt->help;
+
+# Worker bees
+my $ua         = Mojo::UserAgent->new;
+my $delay      = Mojo::IOLoop::Delay->new;
+my $timeparser = DateTime::Format::Strptime->new(
+    pattern  => '%Y.%m.%d',
+    on_error => 'croak',
+);
+
+# Helpers
+sub too_old {
+    my ($index) = validate_pos( @_, { type => SCALAR } );
+    if ( $index =~ m{^logstash-(\d+\.\d+\.\d+)} ) {
+        my $index_time = $timeparser->parse_datetime( $1, '%Y.%m.%d' );
+        my $cutoff_time = DateTime->now->subtract( days => $opt->days );
+
+        return $index_time < $cutoff_time;
+    }
+    else {
+        return;
+    }
+}
+
+sub log_message {
+    my ($message) = validate_pos( @_, { type => SCALAR } );
+
+    if ( $opt->noop ) {
+        $message = '[noop] ' . $message;
+    }
+
+    print( $message . "\n" );
+}
+
+$ua->on(
+    error => sub {
+        my ( $ua, $err ) = @_;
+
+        log_message( "Error: " . $err );
+    }
+);
+
+$ua->on(
+    start => sub {
+        my ( $ua, $tx ) = @_;
+
+        $tx->on(
+            finish => sub {
+                my ($tx) = @_;
+
+                my $msg = sprintf(
+                    '%s %s => %d (%s)',
+                    $tx->req->method, $tx->req->url,
+                    $tx->res->code,   $tx->res->default_message
+                );
+
+                if ($opt->verbose or $tx->res->code != 200) {
+                    log_message($msg);
+                }
+            }
+        );
+    }
+);
+
+# Main loop
+$delay->steps(
+
+    # Get status
+    sub {
+        my $delay = shift;
+        my $url   = $opt->url . '/_status';
+        my $tx    = $ua->get( $url, $delay->begin );
+
+    },
+
+    # Get candidates from indices, and make delete requests
+    sub {
+        my ( $delay, $tx ) = @_;
+
+        my $indices = $tx->res->json('/indices');
+        for my $index ( keys %{$indices} ) {
+
+            if ( too_old $index ) {
+                my $url = $opt->url . "/" . $index;
+
+                if ( $opt->noop ) {
+                    log_message( "DELETE " . $url );
+                }
+                else {
+                    $ua->delete( $url, $delay->begin );
+                }
+            }
+        }
+    }
+
+);
+
+$delay->wait unless Mojo::IOLoop->is_running;
