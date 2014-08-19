@@ -90,12 +90,16 @@ $ua->on(
                 my ($tx) = @_;
 
                 my $msg = sprintf(
-                    '%s %s => %d (%s)',
-                    $tx->req->method, $tx->req->url,
-                    $tx->res->code,   $tx->res->default_message
+                    '%s %s => %s (%s)',
+                    $tx->req->method,
+                    $tx->req->url,
+                    $tx->res->default_message,
+                    $tx->res->code ? $tx->res->code : 'no http response',
                 );
-
-                if ($opt->verbose or $tx->res->code != 200) {
+                if (   $opt->verbose
+                    or not defined $tx->res->code
+                    or $tx->res->code != 200 )
+                {
                     log_message($msg);
                 }
             }
