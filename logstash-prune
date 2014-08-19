@@ -19,7 +19,7 @@ my ( $opt, $usage ) = describe_options(
     'logstash-prune %o',
     [   'url|u=s',
         'elasticsearch URL',
-        {   default   => 'http://_localhost:9200',
+        {   default   => 'http://localhost:9200',
             callbacks => {
                 is_valid_uri => sub { is_uri( shift() ) }
             }
